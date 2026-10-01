@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>轨道应急规程 · 安全审计</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#28324a; --fg:#e7ecf5;
+          --muted:#93a0b8; --accent:#4f8cff; --ok:#2fbf71; --bad:#ff5d5d; --warn:#ffb020; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .sub { color:var(--muted); font-size:12px; }
+  main { padding:20px 24px; display:grid; grid-template-columns:minmax(360px,1fr) minmax(360px,1.1fr); gap:20px; }
+  @media (max-width:960px){ main{grid-template-columns:1fr;} }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size:14px; margin:0 0 12px; color:var(--muted); font-weight:600;
+             text-transform:uppercase; letter-spacing:.06em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:7px 9px; background:#0d1322; color:var(--fg);
+                  border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  input:focus, select:focus { outline:none; border-color:var(--accent); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .proc { border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:10px; background:#121a2b; }
+  .proc-head { display:flex; gap:8px; align-items:center; }
+  .proc-head .pid { flex:1; }
+  .node-row { display:grid; grid-template-columns:1.1fr 1fr 1.1fr 1.1fr 28px; gap:6px;
+              align-items:center; margin-top:6px; }
+  .node-row input, .node-row select { padding:5px 7px; font-size:12px; }
+  button { cursor:pointer; border:1px solid var(--line); background:#1d2740; color:var(--fg);
+           padding:8px 14px; border-radius:7px; font-size:13px; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.danger { color:var(--bad); }
+  button.mini { padding:3px 8px; font-size:12px; }
+  .actions { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .err { background:#2a171c; border:1px solid #5a2730; color:#ffb4b4; border-radius:8px;
+         padding:10px 12px; margin:10px 0; white-space:pre-line; }
+  .conflict { background:#2c2410; border:1px solid #5a4a1e; color:#ffd98a; border-radius:8px;
+              padding:10px 12px; margin:10px 0; }
+  .verdict { border-radius:10px; padding:14px 16px; font-size:15px; font-weight:600; margin-bottom:12px; }
+  .verdict.bad { background:#1f1416; border:1px solid var(--bad); color:#ff9a9a; }
+  .verdict.ok  { background:#112018; border:1px solid var(--ok); color:#8fe6b6; }
+  .meta { color:var(--muted); font-size:12px; margin-bottom:10px; }
+  .chain { margin-top:6px; }
+  .step { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px;
+          background:#101828; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+          opacity:.45; transition:opacity .15s,border-color .15s; }
+  .step.on { opacity:1; border-color:var(--accent); }
+  .step.dng { border-color:var(--bad); }
+  .step .kind { display:inline-block; min-width:46px; text-align:center; border-radius:4px;
+                padding:0 6px; margin-right:8px; font-size:11px; }
+  .k-jump { background:#1d3358; color:#9cc2ff; }
+  .k-call { background:#3a2a5c; color:#c9a8ff; }
+  .k-return { background:#24403a; color:#8fe0c0; }
+  .k-danger { background:#5a2330; color:#ff9aa8; }
+  .stack { color:var(--muted); margin-top:4px; word-break:break-all; }
+  .stack b { color:var(--warn); }
+  .toolbar { display:flex; gap:8px; align-items:center; margin:6px 0 12px; flex-wrap:wrap; }
+  .muted { color:var(--muted); }
+  .badge { font-size:11px; border:1px solid var(--line); border-radius:20px; padding:1px 8px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>轨道应急规程 · 危险可达性安全审计</h1>
+  <span class="sub">下推系统单调饱和 · 精确匹配调用/返回 · 覆盖无界递归</span>
+</header>
+<main>
+  <section class="card">
+    <h2>规程录入（至多 12 份）</h2>
+    <label>稳定审计标识 audit_id</label>
+    <input id="auditId" placeholder="例如 AUDIT-2026-0001" />
+    <label>根入口 root_entry（根规程标识）</label>
+    <input id="rootEntry" placeholder="例如 main" />
+    <div id="procs"></div>
+    <div class="actions">
+      <button class="mini" id="addProc">＋ 添加规程</button>
+      <span class="badge" id="procCount">0 / 12</span>
+    </div>
+    <div class="actions">
+      <button class="primary" id="analyze">提交分析（真实 API）</button>
+      <button id="sample">载入示例</button>
+    </div>
+    <div class="err" id="errors" style="display:none"></div>
+    <div class="conflict" id="conflict" style="display:none"></div>
+
+    <h2 style="margin-top:22px">按审计标识读取冻结证据（刷新后仍可取回）</h2>
+    <div class="toolbar">
+      <input id="loadId" placeholder="输入已提交的 audit_id" style="flex:1" />
+      <button id="load">读取</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>审计结论与可重放链</h2>
+    <div id="result"><p class="muted">提交后在此显示结论。草稿的任何改动都会清除旧结论。</p></div>
+  </section>
+</main>
+
+<script>
+const TYPES = [
+  ["jump","普通跳转 jump"],
+  ["call","调用 call"],
+  ["return","正常返回 return"],
+  ["danger","危险 danger"],
+];
+let procs = [];
+
+function $(id){ return document.getElementById(id); }
+
+function newNode(){ return {id:"", type:"jump", next:"", target:"", cont:""}; }
+function newProc(){ return {id:"", entry:"", nodes:[newNode()]}; }
+
+function render(){
+  const box = $("procs"); box.innerHTML = "";
+  $("procCount").textContent = procs.length + " / 12";
+  procs.forEach((p, pi)=>{
+    const el = document.createElement("div"); el.className="proc";
+    el.innerHTML = `
+      <div class="proc-head">
+        <input class="pid" placeholder="规程标识 id" value="${esc(p.id)}" data-k="id" />
+        <input style="flex:1" placeholder="入口节点 entry" value="${esc(p.entry)}" data-k="entry" />
+        <button class="mini danger" data-act="delproc">删</button>
+      </div>
+      <div class="nodes"></div>
+      <div class="actions"><button class="mini" data-act="addnode">＋ 节点</button></div>`;
+    el.querySelectorAll(".proc-head input").forEach(inp=>{
+      inp.addEventListener("input", e=>{ p[e.target.dataset.k]=e.target.value; clearResult(); });
+    });
+    el.querySelector('[data-act=delproc]').onclick = ()=>{ procs.splice(pi,1); clearResult(); render(); };
+    el.querySelector('[data-act=addnode]').onclick = ()=>{ p.nodes.push(newNode()); clearResult(); render(); };
+    const nbox = el.querySelector(".nodes");
+    p.nodes.forEach((n, ni)=>{
+      const nr = document.createElement("div"); nr.className="node-row";
+      const opts = TYPES.map(([v,t])=>`<option value="${v}" ${n.type===v?"selected":""}>${t}</option>`).join("");
+      nr.innerHTML = `
+        <input placeholder="节点 id" value="${esc(n.id)}" data-k="id" />
+        <select data-k="type">${opts}</select>
+        <input class="f-next" placeholder="→ next" value="${esc(n.next)}" />
+        <input class="f-call" placeholder="target｜cont" />
+        <button class="mini danger" data-act="delnode">×</button>`;
+      nr.querySelector('[data-k=id]').addEventListener("input",e=>{n.id=e.target.value;clearResult();});
+      nr.querySelector('[data-k=type]').addEventListener("change",e=>{n.type=e.target.value;clearResult();render();});
+      const fnext = nr.querySelector(".f-next");
+      fnext.value = n.next;
+      fnext.addEventListener("input",e=>{n.next=e.target.value;clearResult();});
+      const fcall = nr.querySelector(".f-call");
+      if(n.type==="call"){
+        fcall.placeholder = "target,cont";
+        fcall.value = (n.target||"") + (n.cont ? ","+n.cont : "");
+        fnext.disabled = true; fnext.placeholder="—";
+      } else {
+        fcall.disabled = true; fcall.placeholder = "—"; fcall.value="";
+        if(n.type==="jump"){ fnext.placeholder="→ next"; }
+      }
+      fcall.addEventListener("input",e=>{
+        const parts = e.target.value.split(",");
+        n.target=(parts[0]||"").trim(); n.cont=(parts[1]||"").trim();
+        clearResult();
+      });
+      nr.querySelector('[data-act=delnode]').onclick=()=>{p.nodes.splice(ni,1);clearResult();render();};
+      nbox.appendChild(nr);
+    });
+    box.appendChild(el);
+  });
+}
+function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function clearResult(){ $("result").innerHTML = '<p class="muted">草稿已变更，旧结论已清除。提交后显示新结论。</p>';
+  $("errors").style.display="none"; $("conflict").style.display="none"; }
+
+function buildPayload(){
+  return {
+    audit_id: $("auditId").value.trim(),
+    root_entry: $("rootEntry").value.trim(),
+    procedures: procs.map(p=>({
+      id:p.id.trim(), entry:p.entry.trim(),
+      nodes:p.nodes.map(n=>{
+        const o={id:n.id.trim(), type:n.type};
+        if(n.type==="jump") o.next=n.next.trim();
+        if(n.type==="call"){ o.target=n.target; o.cont=n.cont; }
+        return o;
+      })
+    }))
+  };
+}
+
+async function submit(){
+  $("errors").style.display="none"; $("conflict").style.display="none";
+  const resp = await fetch("/api/analyze",{method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(buildPayload())});
+  const data = await resp.json();
+  if(!data.ok){
+    if(data.errors){ const e=$("errors"); e.style.display="block"; e.textContent=data.errors.join("\n"); }
+    if(data.conflict){ const c=$("conflict"); c.style.display="block"; c.textContent=data.conflict; }
+    $("result").innerHTML='<p class="muted">载荷未通过校验或被冻结策略拒绝，未产生结论。</p>';
+    return;
+  }
+  renderResult(data.result);
+}
+
+function kindLabel(k){ return {jump:"JUMP",call:"CALL",return:"RETURN",danger:"DANGER"}[k]||k; }
+
+function renderResult(r){
+  const cls = r.dangerous_reachable ? "bad":"ok";
+  const icon = r.dangerous_reachable ? "⛔ 危险可达" : "✅ 安全结论";
+  let html = `<div class="verdict ${cls}">${icon}：${esc(r.conclusion)}</div>`;
+  html += `<div class="meta">audit_id=<b>${esc(r.audit_id)}</b> · 根入口=${esc(r.root_entry)} ·
+           ${r.replayed?"<span class='badge'>同载荷回放冻结结论</span>":"<span class='badge'>首次冻结</span>"}</div>`;
+  if(r.dangerous_reachable){
+    html += `<div class="toolbar">
+               <button class="mini primary" id="play">▶ 逐步重放</button>
+               <button class="mini" id="playAll">⏩ 一次展开</button>
+               <button class="mini" id="reset">重置</button>
+             </div><div class="chain" id="chain"></div>`;
+  } else {
+    html += `<div class="meta">根入口 <b>${esc(r.summary.root_entry)}</b>
+             经任意嵌套层数均无法抵达危险节点。可返回摘要：
+             root_can_return=${r.summary.root_can_return}</div>`;
+  }
+  $("result").innerHTML = html;
+  if(r.dangerous_reachable){
+    const chain = $("chain");
+    r.steps.forEach((s,i)=>{
+      const d=document.createElement("div"); d.className="step"+(s.dangerous?" dng":""); d.dataset.i=i;
+      let detail="";
+      if(s.kind==="jump") detail=`→ ${esc(s.target)}`;
+      if(s.kind==="call") detail=`调用 ${esc(s.target)}，返回续点 ${esc(s.cont)}`;
+      if(s.kind==="return") detail="正常返回（弹栈）";
+      if(s.kind==="danger") detail="到达危险节点";
+      d.innerHTML=`<span class="kind k-${s.kind}">${kindLabel(s.kind)}</span>
+        <b>${esc(s.procedure)}.${esc(s.node)}</b> <span class="muted">${detail}</span>
+        <div class="stack">栈(顶→底): ${s.stack.map((x,j)=>j===0?`<b>${esc(x)}</b>`:esc(x)).join(" ◂ ")}</div>`;
+      chain.appendChild(d);
+    });
+    let cursor=-1, timer=null;
+    const stepsEls=[...chain.querySelectorAll(".step")];
+    function show(n){ stepsEls.forEach((e,i)=>e.classList.toggle("on",i<=n)); }
+    $("reset").onclick=()=>{clearInterval(timer);cursor=-1;show(-1);};
+    $("playAll").onclick=()=>{clearInterval(timer);show(stepsEls.length-1);};
+    $("play").onclick=()=>{ clearInterval(timer);
+      timer=setInterval(()=>{ cursor++; if(cursor>=stepsEls.length){clearInterval(timer);return;} show(cursor); },650); };
+  }
+}
+
+$("addProc").onclick=()=>{ if(procs.length<12){ procs.push(newProc()); clearResult(); render(); } };
+$("analyze").onclick=submit;
+$("auditId").addEventListener("input",clearResult);
+$("rootEntry").addEventListener("input",clearResult);
+$("load").onclick=async()=>{
+  const id=$("loadId").value.trim(); if(!id) return;
+  const resp=await fetch("/api/evidence/"+encodeURIComponent(id));
+  const data=await resp.json();
+  if(resp.status!==200){ const e=$("errors"); e.style.display="block"; e.textContent=data.error||"未找到"; return; }
+  $("errors").style.display="none";
+  renderResult(data);
+};
+$("sample").onclick=()=>{
+  // 嵌套调用正常返回后，根规程才在续点进入危险节点：
+  // main.a0 调用 P(续点 a1=危险)；P.p0 调用 Q(续点 p1)；p1 返回；Q.q0 返回。
+  procs = [
+    {id:"main", entry:"a0", nodes:[
+      {id:"a0",type:"call",target:"P",cont:"a1"},
+      {id:"a1",type:"danger"},
+    ]},
+    {id:"P", entry:"p0", nodes:[
+      {id:"p0",type:"call",target:"Q",cont:"p1"},
+      {id:"p1",type:"return"},
+    ]},
+    {id:"Q", entry:"q0", nodes:[
+      {id:"q0",type:"return"},
+    ]},
+  ];
+  $("auditId").value="AUDIT-DEMO-NESTED-RETURN"; $("rootEntry").value="main";
+  clearResult(); render();
+};
+
+procs.push(newProc());
+render();
+</script>
+</body>
+</html>

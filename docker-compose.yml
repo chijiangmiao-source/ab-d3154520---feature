@@ -1,0 +1,33 @@
+# 轨道应急规程安全审计 — Compose 编排
+# 宿主端口可配置：HOST_PORT=9090 docker compose up web
+#   web    长期运行的页面 + API（健康路径 /health）
+#   verify 一次性 verify 服务：构建检查 + 代码测试 + HTTP 冒烟，跑完即按状态码退出
+services:
+  web:
+    build: .
+    image: rail-emergency-audit:latest
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+    ports:
+      # 可配置宿主端口，默认 8080
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  verify:
+    build: .
+    image: rail-emergency-audit:latest
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      WEB_URL: http://web:8080
+    # 一次运行后退出，以状态码报告（0 全通过 / 1 失败）
+    command: ["python", "verify.py"]
+    restart: "no"
