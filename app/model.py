@@ -62,6 +62,48 @@ class Step:
 
 
 @dataclass
+class CostStep:
+    """最低代价链上的一步（执行一个节点）及其代价、累计代价与调用栈。"""
+    index: int
+    node_id: str
+    proc: str
+    kind: str
+    target: str | None
+    cont: str | None
+    cost: int
+    cumulative: int
+    dangerous: bool
+    stack: list[str]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "node": self.node_id,
+            "procedure": self.proc,
+            "kind": self.kind,
+            "target": self.target,
+            "cont": self.cont,
+            "cost": self.cost,
+            "cumulative": self.cumulative,
+            "dangerous": self.dangerous,
+            "stack": list(self.stack),
+        }
+
+
+@dataclass
+class DisposalResult:
+    disposal_id: str
+    audit_id: str
+    min_cost: int
+    events: int
+    danger_node: str
+    steps: list[CostStep]
+    final_stack: list[str]
+    frozen_payload: dict[str, Any]
+    conclusion: str
+
+
+@dataclass
 class AuditResult:
     audit_id: str
     root_entry: str

@@ -23,6 +23,10 @@ class PayloadError(ValueError):
     """载荷结构本身无法解析（非字典、字段类型错等）。"""
 
 
+class SourceMissing(Exception):
+    """来源审计标识不存在（对应 HTTP 404）。"""
+
+
 def _is_str(v: Any) -> bool:
     return isinstance(v, str) and v != ""
 
@@ -30,7 +34,7 @@ def _is_str(v: Any) -> bool:
 def parse_and_validate(body: Any) -> tuple[str, str, list[Procedure]]:
     """返回 (audit_id, root_entry, procedures)；无效则抛 PayloadError。"""
     if not isinstance(body, dict):
-        raise PayloadError("请求体必须是 JSON 对象")
+        raise PayloadError(["请求体必须是 JSON 对象"])
 
     audit_id = body.get("audit_id")
     root_entry = body.get("root_entry")
@@ -164,3 +168,82 @@ def parse_and_validate(body: Any) -> tuple[str, str, list[Procedure]]:
         raise PayloadError(errors)
 
     return audit_id, root_entry, procedures
+
+
+def parse_and_validate_disposal(body: Any, source_of) -> tuple:
+    """校验处置载荷，返回 (disposal_id, audit_id, costs, source)。
+
+    source_of(audit_id) -> 冻结审计记录 | None。错误一次性聚合：标识缺
+    失、来源结论安全、代价表节点遗漏/重复/未知、非法代价；来源不存在
+    抛 SourceMissing。任何拒绝都不触碰已冻结的审计与方案。
+    """
+    if not isinstance(body, dict):
+        raise PayloadError(["请求体必须是 JSON 对象"])
+
+    disposal_id = body.get("disposal_id")
+    audit_id = body.get("audit_id")
+
+    errors: list[str] = []
+    if not _is_str(disposal_id):
+        errors.append("缺少稳定处置标识 disposal_id")
+    if not _is_str(audit_id):
+        errors.append("缺少来源审计标识 audit_id")
+    if errors:
+        raise PayloadError(errors)
+
+    source = source_of(audit_id)
+    if source is None:
+        raise SourceMissing(f"来源审计不存在: {audit_id}（无冻结结论可处置）")
+    if not source["result"]["dangerous_reachable"]:
+        raise PayloadError(
+            [f"来源审计 {audit_id} 结论为安全，无危险链可处置"]
+        )
+
+    procedures = source["procedures"]
+    executable: dict[str, Node] = {}
+    all_nids: set[str] = set()
+    for p in procedures:
+        for nid, n in p.nodes.items():
+            all_nids.add(nid)
+            if n.ntype in (JUMP, CALL, RETURN):
+                executable[nid] = n
+
+    costs_raw = body.get("costs")
+    if not isinstance(costs_raw, list):
+        raise PayloadError(
+            ['costs 必须是数组，每项形如 {"node": 节点标识, "cost": 非负整数}']
+        )
+
+    errors = []
+    costs: dict[str, int] = {}
+    seen: set[str] = set()
+    for i, item in enumerate(costs_raw):
+        if not isinstance(item, dict):
+            errors.append(f"代价条目[{i}] 必须是对象")
+            continue
+        nid = item.get("node")
+        cost = item.get("cost")
+        if not _is_str(nid):
+            errors.append(f"代价条目[{i}] 缺少节点标识 node")
+            continue
+        if nid in seen:
+            errors.append(f"代价表节点重复: {nid}")
+        seen.add(nid)
+        if nid not in executable:
+            if nid in all_nids:
+                errors.append(f"节点 {nid} 为危险节点，不属于可执行代价节点")
+            else:
+                errors.append(f"未知节点: {nid}（来源审计中不存在）")
+        if isinstance(cost, bool) or not isinstance(cost, int) or cost < 0:
+            errors.append(f"非法代价: 节点 {nid} 的代价 {cost!r} 不是非负整数")
+        elif nid in executable and nid not in costs:
+            costs[nid] = cost
+
+    missing = sorted(nid for nid in executable if nid not in seen)
+    if missing:
+        errors.append(f"代价表遗漏节点: {', '.join(missing)}")
+
+    if errors:
+        raise PayloadError(errors)
+
+    return disposal_id, audit_id, costs, source

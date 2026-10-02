@@ -177,7 +177,9 @@ class Analyzer:
             if is_event(cur):
                 target = cur
                 break
-            for nxt in self.same_succ.get(cur, ()):
+            # 按节点标识序遍历，保证最短链裁决稳定可重现
+            for nxt in sorted(self.same_succ.get(cur, ()),
+                              key=lambda c: (c[1], c[0])):
                 if nxt[0] == cur[0] and nxt not in prev:
                     prev[nxt] = cur
                     dq.append(nxt)

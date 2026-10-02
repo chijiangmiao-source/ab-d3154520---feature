@@ -16,6 +16,7 @@
   header .sub { color:var(--muted); font-size:12px; }
   main { padding:20px 24px; display:grid; grid-template-columns:minmax(360px,1fr) minmax(360px,1.1fr); gap:20px; }
   @media (max-width:960px){ main{grid-template-columns:1fr;} }
+  .col { display:grid; gap:20px; align-content:start; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
   .card h2 { font-size:14px; margin:0 0 12px; color:var(--muted); font-weight:600;
              text-transform:uppercase; letter-spacing:.06em; }
@@ -44,6 +45,7 @@
   .verdict { border-radius:10px; padding:14px 16px; font-size:15px; font-weight:600; margin-bottom:12px; }
   .verdict.bad { background:#1f1416; border:1px solid var(--bad); color:#ff9a9a; }
   .verdict.ok  { background:#112018; border:1px solid var(--ok); color:#8fe6b6; }
+  .verdict.disp { background:#131c2e; border:1px solid var(--accent); color:#a9c8ff; }
   .meta { color:var(--muted); font-size:12px; margin-bottom:10px; }
   .chain { margin-top:6px; }
   .step { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:6px;
@@ -62,12 +64,19 @@
   .toolbar { display:flex; gap:8px; align-items:center; margin:6px 0 12px; flex-wrap:wrap; }
   .muted { color:var(--muted); }
   .badge { font-size:11px; border:1px solid var(--line); border-radius:20px; padding:1px 8px; color:var(--muted); }
+  .cbadge { font-size:11px; border:1px solid var(--line); border-radius:20px; padding:1px 8px;
+            color:var(--warn); margin-left:6px; }
+  .cost-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; margin-top:6px; }
+  .cost-row { display:flex; align-items:center; gap:8px;
+              font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .cost-row span { flex:1; word-break:break-all; }
+  .cost-row input { width:90px; padding:5px 7px; font-size:12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>轨道应急规程 · 危险可达性安全审计</h1>
-  <span class="sub">下推系统单调饱和 · 精确匹配调用/返回 · 覆盖无界递归</span>
+  <span class="sub">下推系统单调饱和 · 精确匹配调用/返回 · 覆盖无界递归 · min-plus 最低代价处置</span>
 </header>
 <main>
   <section class="card">
@@ -95,10 +104,34 @@
     </div>
   </section>
 
-  <section class="card">
-    <h2>审计结论与可重放链</h2>
-    <div id="result"><p class="muted">提交后在此显示结论。草稿的任何改动都会清除旧结论。</p></div>
-  </section>
+  <div class="col">
+    <section class="card">
+      <h2>审计结论与可重放链</h2>
+      <div id="result"><p class="muted">提交后在此显示结论。草稿的任何改动都会清除旧结论。</p></div>
+    </section>
+
+    <section class="card">
+      <h2>处置方案 · 抵达同一危险节点的最低总代价</h2>
+      <div class="meta" id="dispSrc">先提交或读取一份“危险可达”的冻结审计，再填写处置代价。</div>
+      <div id="dispForm" style="display:none">
+        <label>稳定处置标识 disposal_id</label>
+        <input id="disposalId" placeholder="例如 DISP-2026-0001" />
+        <label>各可执行节点（跳转/调用/返回）的处置代价：非负整数；危险节点无代价</label>
+        <div class="cost-grid" id="costGrid"></div>
+        <div class="actions">
+          <button class="primary" id="dispose">确认最低总代价（真实 API）</button>
+        </div>
+      </div>
+      <h2 style="margin-top:18px">按处置标识读取冻结方案（刷新后仍可取回）</h2>
+      <div class="toolbar">
+        <input id="loadDispId" placeholder="输入已冻结的 disposal_id" style="flex:1" />
+        <button id="loadDisp">读取</button>
+      </div>
+      <div class="err" id="dispErrors" style="display:none"></div>
+      <div class="conflict" id="dispConflict" style="display:none"></div>
+      <div id="dispResult"></div>
+    </section>
+  </div>
 </main>
 
 <script>
@@ -109,6 +142,7 @@ const TYPES = [
   ["danger","危险 danger"],
 ];
 let procs = [];
+let currentAudit = null;   // 当前展示的“危险可达”冻结审计（处置方案的来源）
 
 function $(id){ return document.getElementById(id); }
 
@@ -170,8 +204,19 @@ function render(){
 }
 function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
-function clearResult(){ $("result").innerHTML = '<p class="muted">草稿已变更，旧结论已清除。提交后显示新结论。</p>';
-  $("errors").style.display="none"; $("conflict").style.display="none"; }
+function clearDisp(){
+  $("dispErrors").style.display="none"; $("dispConflict").style.display="none";
+  $("dispResult").innerHTML="";
+}
+
+function clearResult(){
+  $("result").innerHTML = '<p class="muted">草稿已变更，旧结论已清除。提交后显示新结论。</p>';
+  $("errors").style.display="none"; $("conflict").style.display="none";
+  currentAudit = null;
+  $("dispForm").style.display="none";
+  $("dispSrc").textContent = "先提交或读取一份“危险可达”的冻结审计，再填写处置代价。";
+  clearDisp();
+}
 
 function buildPayload(){
   return {
@@ -244,13 +289,98 @@ function renderResult(r){
     $("playAll").onclick=()=>{clearInterval(timer);show(stepsEls.length-1);};
     $("play").onclick=()=>{ clearInterval(timer);
       timer=setInterval(()=>{ cursor++; if(cursor>=stepsEls.length){clearInterval(timer);return;} show(cursor); },650); };
+    // 危险可达：开放处置方案填写
+    currentAudit = r;
+    buildDispForm(r);
+  } else {
+    currentAudit = null;
+    $("dispForm").style.display="none";
+    $("dispSrc").textContent = "当前审计结论为安全，无危险链可处置。";
+    clearDisp();
   }
+}
+
+function buildDispForm(r){
+  $("dispSrc").innerHTML = `来源审计 <b>${esc(r.audit_id)}</b>（危险可达，已冻结）· 为每个可执行节点填写非负整数代价`;
+  $("dispForm").style.display="block";
+  clearDisp();
+  const g=$("costGrid"); g.innerHTML="";
+  r.frozen_payload.procedures.forEach(p=>{
+    p.nodes.forEach(n=>{
+      if(n.type==="danger") return;
+      const row=document.createElement("div"); row.className="cost-row";
+      const label=document.createElement("span");
+      label.textContent = `${p.id}.${n.id}（${n.type}）`;
+      const inp=document.createElement("input");
+      inp.value="1"; inp.dataset.node=n.id; inp.placeholder="非负整数";
+      inp.addEventListener("input", clearDisp);   // 编辑草稿须清除旧显示
+      row.appendChild(label); row.appendChild(inp);
+      g.appendChild(row);
+    });
+  });
+}
+
+async function submitDispose(){
+  if(!currentAudit) return;
+  clearDisp();
+  const costs=[...$("costGrid").querySelectorAll("input")].map(i=>{
+    const v=i.value.trim();
+    return {node:i.dataset.node, cost: v==="" ? null : Number(v)};
+  });
+  const resp = await fetch("/api/dispose",{method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({disposal_id:$("disposalId").value.trim(),
+                         audit_id:currentAudit.audit_id, costs})});
+  const data = await resp.json();
+  if(!data.ok){
+    if(data.errors){ const e=$("dispErrors"); e.style.display="block"; e.textContent=data.errors.join("\n"); }
+    if(data.error){ const e=$("dispErrors"); e.style.display="block"; e.textContent=data.error; }
+    if(data.conflict){ const c=$("dispConflict"); c.style.display="block"; c.textContent=data.conflict; }
+    return;
+  }
+  renderDispResult(data.result);
+}
+
+function renderDispResult(r){
+  let html=`<div class="verdict disp">🧯 ${esc(r.conclusion)}</div>`;
+  html+=`<div class="meta">disposal_id=<b>${esc(r.disposal_id)}</b> · 来源审计=${esc(r.audit_id)} ·
+           最低总代价=<b>${r.min_cost}</b> · 事件数=${r.events} · 抵达=${esc(r.danger_node)} ·
+           ${r.replayed?"<span class='badge'>同载荷回放冻结方案</span>":"<span class='badge'>首次冻结</span>"}</div>`;
+  html+=`<div class="toolbar">
+           <button class="mini primary" id="dplay">▶ 逐步重放</button>
+           <button class="mini" id="dplayAll">⏩ 一次展开</button>
+           <button class="mini" id="dreset">重置</button>
+         </div><div class="chain" id="dchain"></div>`;
+  $("dispResult").innerHTML=html;
+  const chain=$("dchain");
+  r.steps.forEach((s,i)=>{
+    const d=document.createElement("div"); d.className="step"+(s.dangerous?" dng":"");
+    let detail="";
+    if(s.kind==="jump") detail=`→ ${esc(s.target)}`;
+    if(s.kind==="call") detail=`调用 ${esc(s.target)}，返回续点 ${esc(s.cont)}`;
+    if(s.kind==="return") detail="正常返回（弹栈）";
+    if(s.kind==="danger") detail="到达危险节点";
+    d.innerHTML=`<span class="kind k-${s.kind}">${kindLabel(s.kind)}</span>
+      <b>${esc(s.procedure)}.${esc(s.node)}</b> <span class="muted">${detail}</span>
+      <span class="cbadge">代价 ${s.cost}</span><span class="cbadge">累计 ${s.cumulative}</span>
+      <div class="stack">栈(顶→底): ${s.stack.map((x,j)=>j===0?`<b>${esc(x)}</b>`:esc(x)).join(" ◂ ")}</div>`;
+    chain.appendChild(d);
+  });
+  let cursor=-1, timer=null;
+  const els=[...chain.querySelectorAll(".step")];
+  function show(n){ els.forEach((e,i)=>e.classList.toggle("on",i<=n)); }
+  $("dreset").onclick=()=>{clearInterval(timer);cursor=-1;show(-1);};
+  $("dplayAll").onclick=()=>{clearInterval(timer);show(els.length-1);};
+  $("dplay").onclick=()=>{ clearInterval(timer);
+    timer=setInterval(()=>{ cursor++; if(cursor>=els.length){clearInterval(timer);return;} show(cursor); },650); };
 }
 
 $("addProc").onclick=()=>{ if(procs.length<12){ procs.push(newProc()); clearResult(); render(); } };
 $("analyze").onclick=submit;
+$("dispose").onclick=submitDispose;
 $("auditId").addEventListener("input",clearResult);
 $("rootEntry").addEventListener("input",clearResult);
+$("disposalId").addEventListener("input",clearDisp);
 $("load").onclick=async()=>{
   const id=$("loadId").value.trim(); if(!id) return;
   const resp=await fetch("/api/evidence/"+encodeURIComponent(id));
@@ -258,6 +388,14 @@ $("load").onclick=async()=>{
   if(resp.status!==200){ const e=$("errors"); e.style.display="block"; e.textContent=data.error||"未找到"; return; }
   $("errors").style.display="none";
   renderResult(data);
+};
+$("loadDisp").onclick=async()=>{
+  const id=$("loadDispId").value.trim(); if(!id) return;
+  clearDisp();
+  const resp=await fetch("/api/disposal/"+encodeURIComponent(id));
+  const data=await resp.json();
+  if(resp.status!==200){ const e=$("dispErrors"); e.style.display="block"; e.textContent=data.error||"未找到"; return; }
+  renderDispResult(data);
 };
 $("sample").onclick=()=>{
   // 嵌套调用正常返回后，根规程才在续点进入危险节点：

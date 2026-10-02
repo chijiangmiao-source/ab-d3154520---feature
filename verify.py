@@ -5,7 +5,9 @@
   2) Compose：WEB_URL=http://web:8080  对已健康的 web 服务冒烟
 
 围绕关键场景：递归返回后才进入危险续点、悬空调用拒绝、冻结回放
-（同标识同载荷回放 / 改换载荷拒绝 / 刷新后按标识取证据）。
+（同标识同载荷回放 / 改换载荷拒绝 / 刷新后按标识取证据），以及处置
+方案：递归子规程返回后进入危险续点的最低成本、零代价递归收敛、标识
+冲突拒绝、原危险审计仍可读取、按处置标识取回相同证据。
 退出码：全部通过 0，任一失败 1。
 """
 from __future__ import annotations
@@ -54,7 +56,7 @@ def build_check() -> bool:
 def unit_tests() -> bool:
     print("\n[2/3] 代码测试（unittest）")
     loader = unittest.TestLoader()
-    suite = loader.loadTestsFromName("tests.test_audit")
+    suite = loader.loadTestsFromNames(["tests.test_audit", "tests.test_disposal"])
     runner = unittest.TextTestRunner(verbosity=1, stream=sys.stdout)
     res = runner.run(suite)
     ok = res.wasSuccessful()
@@ -118,6 +120,29 @@ RECURSION_SAFE = {
         {"id": "loop", "entry": "l0", "nodes": [
             {"id": "l0", "type": "call", "target": "loop", "cont": "l1"},
             {"id": "l1", "type": "return"}]}],
+}
+
+# 危险链之外挂有零代价自递归与零代价跳转自环：min-plus 求解必须收敛
+ZERO_REC = {
+    "audit_id": "SMOKE-ZERO", "root_entry": "main",
+    "procedures": [
+        {"id": "main", "entry": "a0", "nodes": [
+            {"id": "a0", "type": "call", "target": "P", "cont": "a1"},
+            {"id": "a1", "type": "danger"}]},
+        {"id": "P", "entry": "p0", "nodes": [
+            {"id": "p0", "type": "return"}]},
+        {"id": "loop", "entry": "l0", "nodes": [
+            {"id": "l0", "type": "call", "target": "loop", "cont": "l1"},
+            {"id": "l1", "type": "return"}]},
+        {"id": "spin", "entry": "s0", "nodes": [
+            {"id": "s0", "type": "jump", "next": "s0"}]}],
+}
+
+# 嵌套审计的处置代价表：a0=2, p0=3, q0=7, p1=5（危险节点 a1 无代价）
+DISP_NESTED = {
+    "disposal_id": "DISP-SMOKE-NESTED", "audit_id": "SMOKE-NESTED",
+    "costs": [{"node": "a0", "cost": 2}, {"node": "p0", "cost": 3},
+              {"node": "q0", "cost": 7}, {"node": "p1", "cost": 5}],
 }
 
 
@@ -200,6 +225,119 @@ def http_smoke(base: str) -> bool:
     ok &= check(code == 400, "聚合校验返回 400", str(obj)[:200])
     for token in ["audit_id", "类型无效", "悬空", "重复", "根入口错误"]:
         ok &= check(token in joined, f"一次指出：{token}", joined[:300])
+
+    # ================= 处置方案 =================
+    # 递归子规程返回后进入危险续点的最低成本（2+3+7+5=17，5 个事件）
+    code, obj = request("POST", base + "/api/dispose", DISP_NESTED)
+    res = obj.get("result", {})
+    kinds = [s["kind"] for s in res.get("steps", [])]
+    cums = [s["cumulative"] for s in res.get("steps", [])]
+    stacks = [s["stack"] for s in res.get("steps", [])]
+    ok &= check(code == 200 and obj["ok"], "处置方案提交 200", str(obj)[:200])
+    ok &= check(res.get("min_cost") == 17 and res.get("events") == 5,
+                "递归返回后进入危险续点的最低总代价=17、事件数=5",
+                f"min_cost={res.get('min_cost')} events={res.get('events')}")
+    ok &= check(kinds == ["call", "call", "return", "return", "danger"],
+                "处置链=call,call,return,return,danger", str(kinds))
+    ok &= check(cums == [2, 5, 12, 17, 17], "逐步累计代价", str(cums))
+    ok &= check(stacks == expect_stack, "处置链每步调用栈精确（压栈/弹栈/续点）",
+                f"got={stacks}")
+    ok &= check(res.get("danger_node") == "main.a1", "抵达同一危险节点",
+                str(res.get("danger_node")))
+
+    # 同载荷重传 → 回放已冻结方案
+    code, obj = request("POST", base + "/api/dispose", DISP_NESTED)
+    r3 = obj.get("result", {})
+    ok &= check(code == 200 and r3.get("replayed") is True
+                and r3.get("min_cost") == 17,
+                "处置同载荷重传→回放冻结方案", str(obj)[:200])
+
+    # 标识冲突：同处置标识改换代价表 → 明确拒绝 409
+    changed = json.loads(json.dumps(DISP_NESTED))
+    changed["costs"][0]["cost"] = 99
+    code, obj = request("POST", base + "/api/dispose", changed)
+    ok &= check(code == 409 and "改换" in obj.get("conflict", ""),
+                "同处置标识改换代价表→明确拒绝 409", str(obj)[:200])
+
+    # 标识冲突：同处置标识改换来源 → 明确拒绝 409
+    other = json.loads(json.dumps(NESTED))
+    other["audit_id"] = "SMOKE-NESTED-2"
+    request("POST", base + "/api/analyze", other)
+    changed = json.loads(json.dumps(DISP_NESTED))
+    changed["audit_id"] = "SMOKE-NESTED-2"
+    code, obj = request("POST", base + "/api/dispose", changed)
+    ok &= check(code == 409 and "改换" in obj.get("conflict", ""),
+                "同处置标识改换来源→明确拒绝 409", str(obj)[:200])
+
+    # 零代价递归收敛：自递归与自环停在 ∞，危险链最低代价 0
+    code, obj = request("POST", base + "/api/analyze", ZERO_REC)
+    ok &= check(code == 200 and obj.get("result", {}).get("dangerous_reachable") is True,
+                "零代价递归审计=危险可达", str(obj)[:200])
+    zero_costs = {"disposal_id": "DISP-SMOKE-ZERO", "audit_id": "SMOKE-ZERO",
+                  "costs": [{"node": n, "cost": 0} for n in
+                            ["a0", "p0", "l0", "l1", "s0"]]}
+    t0 = time.time()
+    code, obj = request("POST", base + "/api/dispose", zero_costs)
+    elapsed = time.time() - t0
+    rz = obj.get("result", {})
+    ok &= check(code == 200 and rz.get("min_cost") == 0 and rz.get("events") == 3,
+                "零代价递归收敛：最低总代价=0", str(obj)[:200])
+    zero_cums = [s["cumulative"] for s in rz.get("steps", [])]
+    ok &= check(zero_cums == [0, 0, 0], "零代价链逐步累计全为 0", str(zero_cums))
+    ok &= check(elapsed < 5, f"零代价 min-plus 饱和即时终止（{elapsed:.3f}s）")
+
+    # 处置校验拒绝：来源不存在 404 / 来源结论安全 400 / 遗漏·重复·未知·非法代价 400
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X1", "audit_id": "NO-SUCH",
+                         "costs": [{"node": "a0", "cost": 1}]})
+    ok &= check(code == 404, "来源不存在→404", str(obj)[:200])
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X2", "audit_id": "SMOKE-RECURSION",
+                         "costs": [{"node": "a0", "cost": 1}, {"node": "l0", "cost": 1},
+                                   {"node": "l1", "cost": 1}]})
+    ok &= check(code == 400 and "结论为安全" in " ".join(obj.get("errors", [])),
+                "来源结论安全→400", str(obj)[:200])
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X3", "audit_id": "SMOKE-NESTED",
+                         "costs": [{"node": "a0", "cost": 1}, {"node": "p0", "cost": 1},
+                                   {"node": "q0", "cost": 1}]})
+    ok &= check(code == 400 and "遗漏" in " ".join(obj.get("errors", [])),
+                "节点遗漏→400", str(obj)[:200])
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X4", "audit_id": "SMOKE-NESTED",
+                         "costs": [{"node": "a0", "cost": 1}, {"node": "a0", "cost": 2},
+                                   {"node": "p0", "cost": 1}, {"node": "q0", "cost": 1},
+                                   {"node": "p1", "cost": 1}]})
+    ok &= check(code == 400 and "重复" in " ".join(obj.get("errors", [])),
+                "节点重复→400", str(obj)[:200])
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X5", "audit_id": "SMOKE-NESTED",
+                         "costs": [{"node": "a0", "cost": 1}, {"node": "p0", "cost": 1},
+                                   {"node": "q0", "cost": 1}, {"node": "p1", "cost": 1},
+                                   {"node": "ghost", "cost": 1}]})
+    ok &= check(code == 400 and "未知节点" in " ".join(obj.get("errors", [])),
+                "未知节点→400", str(obj)[:200])
+    code, obj = request("POST", base + "/api/dispose",
+                        {"disposal_id": "D-X6", "audit_id": "SMOKE-NESTED",
+                         "costs": [{"node": "a0", "cost": -1}, {"node": "p0", "cost": 1},
+                                   {"node": "q0", "cost": 1}, {"node": "p1", "cost": 1}]})
+    ok &= check(code == 400 and "非法代价" in " ".join(obj.get("errors", [])),
+                "非法代价→400", str(obj)[:200])
+
+    # 按处置标识读取完全相同的证据；未知处置标识 404
+    code, obj = request("GET", base + "/api/disposal/DISP-SMOKE-NESTED")
+    ok &= check(code == 200 and obj.get("min_cost") == 17
+                and [s["cumulative"] for s in obj.get("steps", [])] == [2, 5, 12, 17, 17],
+                "按处置标识读取相同冻结方案（刷新持久）", str(obj)[:200])
+    code, obj = request("GET", base + "/api/disposal/NO-SUCH")
+    ok &= check(code == 404, "未知处置标识读取返回 404")
+
+    # 原危险审计仍可读取，且未被任何处置/冲突改写
+    code, obj = request("GET", base + "/api/evidence/SMOKE-NESTED")
+    ok &= check(code == 200 and obj.get("conclusion") == first_conclusion
+                and [s["kind"] for s in obj.get("steps", [])]
+                == ["call", "call", "return", "return", "danger"],
+                "原危险审计仍可读取且未被改写", str(obj)[:200])
 
     return ok
 
